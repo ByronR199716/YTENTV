@@ -113,8 +113,16 @@ jobs:
           LOG="$RUNNER_TEMP/build.log"
           exec > >(tee -a "$LOG") 2>&1
           trap 'sleep 1; echo "::error title=Falló el armado del APK::$(tail -n 40 "$LOG" | grep -v "^::" | sed ":a;N;\$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g")"' ERR
-          if [ -z "$BASE_64_SIGNING_KEY" ]; then echo "::error::Falta el secreto BASE_64_SIGNING_KEY en Settings > Secrets and variables > Actions"; exit 1; fi
-          echo "$BASE_64_SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/firma.jks"
+          if [ -z "$BASE_64_SIGNING_KEY" ]; then
+            # Sin la llave se arma igual (para probar), con una llave temporal y SIN publicar.
+            echo "::warning::Falta el secreto BASE_64_SIGNING_KEY: se firma con una llave temporal y no se publica."
+            echo "UNSIGNED_TEST=1" >> "$GITHUB_ENV"
+            export KEY_STORE_PASSWORD=temporal KEY_PASSWORD=temporal ALIAS=temporal
+            keytool -genkeypair -keystore "$RUNNER_TEMP/firma.jks" -alias temporal -keyalg RSA -keysize 2048 \
+              -validity 30 -storepass temporal -keypass temporal -dname "CN=prueba" >/dev/null
+          else
+            echo "$BASE_64_SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/firma.jks"
+          fi
           mkdir -p dist
           for pair in "arm:armeabi-v7a" "arm64:arm64-v8a"; do
             arch="${pair%%:*}"; abi="${pair##*:}"
@@ -133,6 +141,7 @@ jobs:
           ls -la dist
 
       - name: Publicar en Releases
+        if: env.UNSIGNED_TEST != '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -146,6 +155,12 @@ jobs:
           EOF
           gh release create "$TAG" dist/*.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "YTTVPremium $VERSION_NAME" --notes-file notes.md --latest
+
+      - name: Falta la llave de firma
+        if: env.UNSIGNED_TEST == '1'
+        run: |
+          echo "::error::El APK se armó bien, pero no se publicó porque faltan los secretos de firma (BASE_64_SIGNING_KEY, KEY_STORE_PASSWORD, KEY_PASSWORD, ALIAS)."
+          exit 1
 
       - name: Guardar script de TV
         uses: actions/upload-pages-artifact@v3
