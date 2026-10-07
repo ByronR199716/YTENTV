@@ -1,0 +1,162 @@
+name: YTTVPremium APK
+
+# Arma YTTVPremium a partir del APK publicado de TizenTube Cobalt (compilar Cobalt/Chromium desde
+# cero no cabe en los servidores gratis de GitHub). Ver yttvpremium/README.md.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'yttvpremium/**'
+      - '!yttvpremium/**/*.md'
+      - '.github/workflows/yttvpremium.yml'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Versión de TizenTube Cobalt a usar (vacío = la última)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yttvpremium
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UPSTREAM_REPO: reisxd/TizenTubeCobalt
+      APKTOOL_VERSION: 2.12.1
+      VERSION_CODE: ${{ 100 + github.run_number }}
+      VERSION_NAME: 1.0.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            yttvpremium
+            .github/workflows
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Herramientas de Android
+        run: |
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n1)"
+          PLATFORM="$(ls -d "$ANDROID_HOME"/platforms/android-* | sort -V | tail -n1)"
+          echo "BT=$BT" >> "$GITHUB_ENV"
+          echo "ANDROID_JAR=$PLATFORM/android.jar" >> "$GITHUB_ENV"
+          echo "build-tools: $BT"; echo "android.jar: $PLATFORM/android.jar"
+
+      - name: Compilar pantalla de acceso
+        run: |
+          set -e
+          cd yttvpremium/access
+          mkdir -p out/stubs out/classes out/dex
+          javac -nowarn -source 8 -target 8 -bootclasspath "$ANDROID_JAR" -d out/stubs $(find stubs -name '*.java')
+          (cd out/stubs && jar cf ../stubs.jar .)
+          javac -Xlint:-options -source 8 -target 8 -encoding UTF-8 -bootclasspath "$ANDROID_JAR" \
+            -classpath out/stubs.jar -d out/classes $(find src -name '*.java')
+          "$BT/d8" --release --min-api 24 --lib "$ANDROID_JAR" --classpath out/stubs.jar \
+            --output out/dex $(find out/classes -name '*.class')
+          ls -la out/dex
+          echo "ACCESS_DEX=$PWD/out/dex/classes.dex" >> "$GITHUB_ENV"
+
+      - name: Compilar script de TV
+        run: |
+          set -e
+          cd yttvpremium/script
+          npm ci --no-audit --no-fund
+          npm run build
+          mkdir -p ../dist-pages/yttvpremium
+          cp ../dist/userScript.js ../dist-pages/yttvpremium/tv-userScript.js
+          printf '<!doctype html><meta charset="utf-8"><title>YTTVPremium</title><p>YTTVPremium</p>\n' > ../dist-pages/index.html
+          ls -la ../dist-pages/yttvpremium
+
+      - name: Descargar TizenTube Cobalt y apktool
+        run: |
+          set -e
+          TAG="${{ github.event.inputs.upstream_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$UPSTREAM_REPO/releases/latest" | python3 -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')"
+          fi
+          echo "UPSTREAM_TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p upstream
+          for arch in arm arm64; do
+            curl -fsSL -o "upstream/cobalt-$arch.apk" "https://github.com/$UPSTREAM_REPO/releases/download/$TAG/cobalt-$arch.apk"
+          done
+          curl -fsSL -o apktool.jar "https://github.com/iBotPeaches/Apktool/releases/download/v$APKTOOL_VERSION/apktool_$APKTOOL_VERSION.jar"
+          echo "APKTOOL=$PWD/apktool.jar" >> "$GITHUB_ENV"
+          ls -la upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Armar y firmar APKs
+        env:
+          BASE_64_SIGNING_KEY: ${{ secrets.BASE_64_SIGNING_KEY }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ALIAS: ${{ secrets.ALIAS }}
+        run: |
+          set -e
+          if [ -z "$BASE_64_SIGNING_KEY" ]; then echo "Falta el secreto BASE_64_SIGNING_KEY" >&2; exit 1; fi
+          echo "$BASE_64_SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/firma.jks"
+          mkdir -p dist
+          for pair in "arm:armeabi-v7a" "arm64:arm64-v8a"; do
+            arch="${pair%%:*}"; abi="${pair##*:}"
+            bash yttvpremium/build.sh "upstream/cobalt-$arch.apk" "unsigned-$arch.apk" "$ACCESS_DEX" "$VERSION_CODE" "$VERSION_NAME"
+            "$BT/zipalign" -f -p 4 "unsigned-$arch.apk" "aligned-$arch.apk"
+            "$BT/apksigner" sign --ks "$RUNNER_TEMP/firma.jks" --ks-key-alias "$ALIAS" \
+              --ks-pass env:KEY_STORE_PASSWORD --key-pass env:KEY_PASSWORD \
+              --out "dist/YTTVPremium-$VERSION_NAME-$abi.apk" "aligned-$arch.apk"
+            "$BT/apksigner" verify "dist/YTTVPremium-$VERSION_NAME-$abi.apk"
+            # Copia con nombre fijo para un enlace permanente (releases/latest/download/...).
+            cp "dist/YTTVPremium-$VERSION_NAME-$abi.apk" "dist/YTTVPremium-$abi.apk"
+            rm -f "unsigned-$arch.apk" "aligned-$arch.apk"
+          done
+          rm -f "$RUNNER_TEMP/firma.jks"
+          "$BT/aapt2" dump badging "dist/YTTVPremium-armeabi-v7a.apk" | head -n 3
+          ls -la dist
+
+      - name: Publicar en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="build-${{ github.run_number }}"
+          cat > notes.md <<EOF
+          YTTVPremium $VERSION_NAME (versionCode $VERSION_CODE), basado en TizenTube Cobalt $UPSTREAM_TAG.
+
+          - **YTTVPremium-armeabi-v7a.apk**: sirve en casi todos los TV y TV box (recomendado).
+          - **YTTVPremium-arm64-v8a.apk**: solo para equipos de 64 bits.
+          EOF
+          gh release create "$TAG" dist/*.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "YTTVPremium $VERSION_NAME" --notes-file notes.md --latest
+
+      - name: Guardar script de TV
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: yttvpremium/dist-pages
+
+  # El script de TV (bloqueo de anuncios, SponsorBlock, menú) se sirve desde GitHub Pages.
+  # Requiere activar una vez: Settings > Pages > Source: "GitHub Actions".
+  script:
+    needs: apk
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/deploy-pages@v4
