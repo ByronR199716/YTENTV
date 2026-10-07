@@ -108,8 +108,12 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           ALIAS: ${{ secrets.ALIAS }}
         run: |
-          set -e
-          if [ -z "$BASE_64_SIGNING_KEY" ]; then echo "Falta el secreto BASE_64_SIGNING_KEY" >&2; exit 1; fi
+          set -eE
+          # Si algo falla, las últimas líneas quedan como anotación del run (se ven sin abrir el log).
+          LOG="$RUNNER_TEMP/build.log"
+          exec > >(tee -a "$LOG") 2>&1
+          trap 'sleep 1; echo "::error title=Falló el armado del APK::$(tail -n 40 "$LOG" | grep -v "^::" | sed ":a;N;\$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g")"' ERR
+          if [ -z "$BASE_64_SIGNING_KEY" ]; then echo "::error::Falta el secreto BASE_64_SIGNING_KEY en Settings > Secrets and variables > Actions"; exit 1; fi
           echo "$BASE_64_SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/firma.jks"
           mkdir -p dist
           for pair in "arm:armeabi-v7a" "arm64:arm64-v8a"; do
