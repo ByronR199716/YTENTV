@@ -30,7 +30,6 @@ jobs:
     env:
       UPSTREAM_REPO: reisxd/TizenTubeCobalt
       APKTOOL_VERSION: 2.12.1
-      VERSION_CODE: ${{ 100 + github.run_number }}
       VERSION_NAME: 1.0.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +54,7 @@ jobs:
           BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n1)"
           PLATFORM="$(ls -d "$ANDROID_HOME"/platforms/android-* | sort -V | tail -n1)"
           echo "BT=$BT" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$((100 + ${{ github.run_number }}))" >> "$GITHUB_ENV"
           echo "ANDROID_JAR=$PLATFORM/android.jar" >> "$GITHUB_ENV"
           echo "build-tools: $BT"; echo "android.jar: $PLATFORM/android.jar"
 
