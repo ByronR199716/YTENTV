@@ -6,9 +6,10 @@ publicado de [TizenTube Cobalt](https://github.com/reisxd/TizenTubeCobalt/releas
 
 | Qué | Dónde |
 | --- | --- |
-| Nombre YTTVPremium, package `ec.yttvpremium.app`, sin permiso de instalar APKs ni ID de publicidad | `patch_manifest.py` |
+| Nombre YTTVPremium, package `ec.yttvpremium.app`, sin ID de publicidad (se deja el permiso de instalar APKs para el aviso de actualización) | `patch_manifest.py` |
 | Logo y banner del TV | `branding/` (se generan desde el mismo dibujo que YTPremium) |
 | Pantalla de acceso con código (control remoto) y revisión del acceso mientras la app está abierta | `access/src/` (Java) |
+| Aviso de nueva versión: al abrir consulta el panel (`get_app_update(ytpremium, tv)`), descarga el APK y abre el instalador | `access/src/.../AppUpdate.java` + `AccessActivity` |
 | Script propio en vez del de TizenTube (sin actualizador, donaciones ni redes del autor) | `script/` + `patch_native.py` |
 | Nombre al transmitir desde el teléfono ("YTTVPremium (modelo)") | `build.sh` |
 

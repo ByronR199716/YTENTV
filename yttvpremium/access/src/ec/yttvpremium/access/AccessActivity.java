@@ -7,6 +7,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -51,6 +52,16 @@ public class AccessActivity extends Activity {
     private boolean busy;
     private boolean formatting;
 
+    // Aviso de nueva versión (ver AppUpdate).
+    private static final int U_AVAILABLE = 0, U_DOWNLOADING = 1, U_PERMISSION = 2, U_READY = 3, U_FAILED = 4;
+    private AppUpdate.Info update;
+    private AccessController.Session updateSession;
+    private int updateState = -1;
+    private TextView updateText;
+    private ProgressBar updateBar;
+    private Button updatePrimary;
+    private Button updateLater;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -68,11 +79,13 @@ public class AccessActivity extends Activity {
                 @Override
                 public void run() {
                     final AccessController.Decision d = AccessController.check(app);
+                    final AppUpdate.Info update = d.unlocked ? AppUpdate.check(app) : null;
                     main.post(new Runnable() {
                         @Override
                         public void run() {
                             if (isFinishing()) return;
-                            if (d.unlocked) openApp(d.session, true);
+                            if (d.unlocked && update != null) showUpdate(update, d.session);
+                            else if (d.unlocked) openApp(d.session, true);
                             else showRedeem(d.message);
                         }
                     });
@@ -256,12 +269,15 @@ public class AccessActivity extends Activity {
             @Override
             public void run() {
                 final AccessController.Decision d = AccessController.submit(app, raw);
+                final AppUpdate.Info update = d.unlocked ? AppUpdate.check(app) : null;
                 main.post(new Runnable() {
                     @Override
                     public void run() {
                         if (isFinishing()) return;
                         setBusy(false);
-                        if (d.unlocked) {
+                        if (d.unlocked && update != null) {
+                            showUpdate(update, d.session);
+                        } else if (d.unlocked) {
                             openApp(d.session, true);
                         } else {
                             message.setText(d.message == null ? "No se pudo validar el acceso." : d.message);
@@ -272,6 +288,244 @@ public class AccessActivity extends Activity {
                 });
             }
         }, "yttv-access-submit").start();
+    }
+
+    private Button bigButton(String label, int fill, int focusFill) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextColor(Color.WHITE);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        StateListDrawable bg = new StateListDrawable();
+        bg.addState(new int[] { android.R.attr.state_focused }, rounded(focusFill, Color.WHITE, 3, 12));
+        bg.addState(new int[] { android.R.attr.state_pressed }, rounded(focusFill, 0, 0, 12));
+        bg.addState(new int[] {}, rounded(fill, 0, 0, 12));
+        b.setBackground(bg);
+        b.setFocusable(true);
+        b.setPadding(dp(28), 0, dp(28), 0);
+        return b;
+    }
+
+    /** Pantalla "Nueva versión disponible" (se maneja con el control remoto). */
+    private void showUpdate(AppUpdate.Info info, AccessController.Session session) {
+        update = info;
+        updateSession = session;
+        root.removeAllViews();
+        LinearLayout col = column();
+        col.setPadding(dp(48), dp(36), dp(48), dp(36));
+        col.setBackground(rounded(CARD, 0, 0, 20));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(new LogoView(this), new LinearLayout.LayoutParams(dp(56), dp(56)));
+        TextView title = text(info.required ? "Actualización obligatoria" : "Nueva versión disponible", 28, Color.WHITE, true);
+        LinearLayout.LayoutParams tlp = wrap();
+        tlp.leftMargin = dp(18);
+        header.addView(title, tlp);
+        col.addView(header);
+
+        updateText = text("", 18, MUTED, false);
+        updateText.setMaxWidth(dp(560));
+        LinearLayout.LayoutParams ulp = wrap();
+        ulp.topMargin = dp(20);
+        col.addView(updateText, ulp);
+
+        if (info.notes != null && info.notes.trim().length() > 0) {
+            TextView notes = text(info.notes.trim(), 15, 0xFF9A9AA6, false);
+            notes.setMaxWidth(dp(560));
+            notes.setMaxLines(6);
+            LinearLayout.LayoutParams nlp = wrap();
+            nlp.topMargin = dp(14);
+            col.addView(notes, nlp);
+        }
+
+        updateBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        updateBar.setMax(100);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(dp(460), dp(10));
+        plp.topMargin = dp(22);
+        col.addView(updateBar, plp);
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setGravity(Gravity.CENTER);
+        updatePrimary = bigButton("Actualizar", REDEEM, REDEEM_FOCUS);
+        updatePrimary.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { onUpdatePrimary(); }
+        });
+        updateLater = bigButton("Más tarde", 0xFF33333D, 0xFF4A4A56);
+        updateLater.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { updateLater(); }
+        });
+        buttons.addView(updatePrimary, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(56)));
+        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(56));
+        llp.leftMargin = dp(16);
+        buttons.addView(updateLater, llp);
+        LinearLayout.LayoutParams blp = wrap();
+        blp.topMargin = dp(26);
+        col.addView(buttons, blp);
+
+        root.addView(col, centered());
+        registerUpdateBack();
+        setUpdateState(U_AVAILABLE, null);
+    }
+
+    private void setUpdateState(int state, String error) {
+        updateState = state;
+        boolean required = update != null && update.required;
+        updateBar.setVisibility(state == U_DOWNLOADING ? View.VISIBLE : View.GONE);
+        updatePrimary.setVisibility(state == U_DOWNLOADING ? View.GONE : View.VISIBLE);
+        updateLater.setVisibility(state == U_DOWNLOADING || required ? View.GONE : View.VISIBLE);
+        switch (state) {
+            case U_AVAILABLE:
+                updateText.setText(required
+                    ? "Esta versión ya no funciona. Instala la actualización para seguir usando " + AccessConfig.APP_TITLE + "."
+                    : "Hay una versión nueva de " + AccessConfig.APP_TITLE + ". Se descarga e instala desde aquí.");
+                updatePrimary.setText("Actualizar");
+                break;
+            case U_DOWNLOADING:
+                updateBar.setProgress(0);
+                updateText.setText("Descargando…");
+                break;
+            case U_PERMISSION:
+                updateText.setText("Para instalar la actualización, permite a " + AccessConfig.APP_TITLE
+                    + " instalar apps (Instalar apps desconocidas > activar) y luego regresa con el botón Atrás.");
+                updatePrimary.setText("Dar permiso");
+                break;
+            case U_READY:
+                updateText.setText("Elige \"Instalar\" en la ventana de Android. Si la cerraste, ábrela otra vez.");
+                updatePrimary.setText("Instalar");
+                break;
+            case U_FAILED:
+                updateText.setText("No se pudo descargar la actualización. Revisa el internet e inténtalo otra vez."
+                    + (error == null ? "" : "\n(" + error + ")"));
+                updatePrimary.setText("Reintentar");
+                break;
+        }
+        if (updatePrimary.getVisibility() == View.VISIBLE) updatePrimary.requestFocus();
+    }
+
+    private void onUpdatePrimary() {
+        switch (updateState) {
+            case U_AVAILABLE:
+            case U_FAILED:
+                startDownload();
+                break;
+            case U_PERMISSION:
+                if (!AppUpdate.openInstallPermission(this)) {
+                    updateText.setText("Activa \"Instalar apps desconocidas\" para " + AccessConfig.APP_TITLE
+                        + " en los Ajustes del TV (Apps o Seguridad) y vuelve aquí.");
+                }
+                break;
+            case U_READY:
+                installUpdate();
+                break;
+        }
+    }
+
+    private void startDownload() {
+        setUpdateState(U_DOWNLOADING, null);
+        final Context app = getApplicationContext();
+        final String url = update.url;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String error = null;
+                try {
+                    AppUpdate.download(app, url, new AppUpdate.Progress() {
+                        @Override
+                        public void onProgress(final int percent) {
+                            main.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (updateState != U_DOWNLOADING) return;
+                                    updateBar.setProgress(percent);
+                                    updateText.setText("Descargando… " + percent + "%");
+                                }
+                            });
+                        }
+                    });
+                } catch (Exception e) {
+                    error = e.getMessage() == null ? e.toString() : e.getMessage();
+                }
+                final String failure = error;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (isFinishing()) return;
+                        if (failure != null) setUpdateState(U_FAILED, failure);
+                        else if (!AppUpdate.canInstall(AccessActivity.this)) setUpdateState(U_PERMISSION, null);
+                        else installUpdate();
+                    }
+                });
+            }
+        }, "yttv-update-download").start();
+    }
+
+    private void installUpdate() {
+        try {
+            AppUpdate.install(this);
+            setUpdateState(U_READY, null);
+        } catch (Exception e) {
+            setUpdateState(U_FAILED, e.getMessage());
+        }
+    }
+
+    private void updateLater() {
+        if (update != null && update.required) return;
+        updateState = -1;
+        unregisterUpdateBack();
+        openApp(updateSession, true);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Al volver de Ajustes con el permiso ya dado, se instala solo.
+        if (updateState == U_PERMISSION && AppUpdate.canInstall(this)) installUpdate();
+    }
+
+    /** Atrás en la pantalla de actualización: durante la descarga no hace nada; si es obligatoria cierra la app. */
+    private void onUpdateBack() {
+        if (updateState == U_DOWNLOADING) return;
+        if (update != null && update.required) {
+            finish();
+            return;
+        }
+        updateLater();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (updateState >= 0) {
+            onUpdateBack();
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    // Android 13+ con "atrás predictivo" (obligatorio al apuntar a Android 16) ya no llama a onBackPressed.
+    private Object backCallback;
+
+    private void registerUpdateBack() {
+        if (Build.VERSION.SDK_INT < 33 || backCallback != null) return;
+        android.window.OnBackInvokedCallback cb = new android.window.OnBackInvokedCallback() {
+            @Override
+            public void onBackInvoked() {
+                if (updateState >= 0) onUpdateBack();
+            }
+        };
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb);
+        backCallback = cb;
+    }
+
+    private void unregisterUpdateBack() {
+        if (Build.VERSION.SDK_INT < 33 || backCallback == null) return;
+        getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCallback);
+        backCallback = null;
     }
 
     private void openApp(AccessController.Session s, boolean announce) {

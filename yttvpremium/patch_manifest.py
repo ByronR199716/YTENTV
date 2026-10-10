@@ -6,7 +6,8 @@ Uso: patch_manifest.py <AndroidManifest.xml>
 - Package propio (ec.yttvpremium.app) y nombre "YTTVPremium".
 - Application = ec.yttvpremium.access.AccessGuard (vigila el acceso mientras la app está abierta).
 - La pantalla de acceso (AccessActivity) pasa a ser la que abre el launcher del TV / teléfono.
-- Se quitan permisos que no se usan: instalar APKs (actualizador del autor original) e ID de publicidad.
+- Se quita el permiso de ID de publicidad. Se deja (o agrega) el de instalar APKs: lo usa el aviso
+  de nueva versión propio (access/src/.../AppUpdate.java), con el FileProvider que ya trae la app.
 - debuggable = false.
 """
 import re
@@ -38,8 +39,17 @@ xml = must_sub(r'package="' + re.escape(OLD_PACKAGE) + '"', 'package="' + NEW_PA
 xml = xml.replace(OLD_PACKAGE + ".", NEW_PACKAGE + ".")
 
 # Permisos que no se usan.
-for perm in ("android.permission.REQUEST_INSTALL_PACKAGES", "com.google.android.gms.permission.AD_ID"):
+for perm in ("com.google.android.gms.permission.AD_ID",):
     xml = re.sub(r'\s*<uses-permission ' + A + r'name="' + re.escape(perm) + r'"\s*/>', "", xml)
+
+# Instalar la actualización descargada (aviso de nueva versión propio).
+INSTALL = "android.permission.REQUEST_INSTALL_PACKAGES"
+if INSTALL not in xml:
+    xml = must_sub(r"(<application )", '<uses-permission ' + A + 'name="' + INSTALL + '" />\n    \\1', xml, count=1)
+
+# El aviso de nueva versión entrega el APK por este FileProvider (carpeta files/ de la app).
+if "androidx.core.content.FileProvider" not in xml or 'authorities="' + NEW_PACKAGE + '.fileprovider"' not in xml:
+    sys.exit("patch_manifest: falta el FileProvider de la app original (lo usa el aviso de actualización)")
 
 # <application ...>
 app_open = re.search(r"<application [^>]*>", xml).group(0)
