@@ -4,14 +4,15 @@
 Uso: patch_native.py <libchrobalt.so>
 
 La app original descarga su script (bloqueo de anuncios, SponsorBlock, menú de ajustes) desde
-jsDelivr. YTTVPremium usa su propia versión (carpeta yttvpremium/script, publicada en GitHub Pages),
-sin el actualizador ni los enlaces del autor original.
+jsDelivr. YTTVPremium usa su propia versión (carpeta yttvpremium/script), sin el actualizador ni los
+enlaces del autor original. La TV solo acepta cargar el script desde ciertos sitios (cdn.jsdelivr.net sí,
+github.io no), así que el script compilado se guarda en el repo ByronR199716/yttv y se sirve por jsDelivr.
 La dirección nueva tiene exactamente el mismo largo para no mover nada dentro del binario.
 """
 import sys
 
 OLD = b"https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?v="
-NEW = b"https://byronr199716.github.io/YTENTV/yttvpremium/tv-userScript.js?v="
+NEW = b"https://cdn.jsdelivr.net/gh/ByronR199716/yttv@main/s/userScript.js?v="
 assert len(OLD) == len(NEW), (len(OLD), len(NEW))
 
 path = sys.argv[1]
